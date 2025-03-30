@@ -50,5 +50,6 @@ class Contact(Base):
     phone = Column(String, nullable=True)
     birthday = Column(DateTime, nullable=True)
     user_id = Column(Integer, ForeignKey("users.id"))
+    role = Column(String, default="user", nullable=False)
 
     owner = relationship("User", back_populates="contacts")

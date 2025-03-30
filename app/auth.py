@@ -1,4 +1,6 @@
 # app/auth.py
+from datetime import timedelta
+
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from sqlalchemy.orm import Session
@@ -6,10 +8,13 @@ from jose import JWTError, jwt
 from . import crud, schemas, models
 from .database import SessionLocal
 import os
+import redis
+import json
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 SECRET_KEY = os.getenv("SECRET_KEY", "your_secret_key")
 ALGORITHM = "HS256"
+redis_client = redis.Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"))
 
 def get_db():
     """
@@ -47,13 +52,31 @@ def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(
         email: str = payload.get("sub")
         if email is None:
             raise credentials_exception
-        token_data = schemas.TokenData(email=email)
     except JWTError:
         raise credentials_exception
-    user = crud.get_user_by_email(db, email=token_data.email)
+
+    cache_key = f"user:{email}"
+    cached_user = redis_client.get(cache_key)
+    if cached_user:
+        # Повертаємо дані з кешу (у форматі JSON, який відповідає схемі UserOut)
+        return json.loads(cached_user)
+
+    user = crud.get_user_by_email(db, email=email)
     if user is None:
         raise credentials_exception
-    return user
+
+    user_dict = {
+        "id": user.id,
+        "email": user.email,
+        "full_name": user.full_name,
+        "is_active": user.is_active,
+        "is_verified": user.is_verified,
+        "avatar_url": user.avatar_url,
+        "role": getattr(user, "role", "user")
+    }
+    # Зберігаємо в кеш на 5 хвилин
+    redis_client.setex(cache_key, timedelta(minutes=5), json.dumps(user_dict))
+    return user_dict
 
 def get_current_active_user(current_user: models.User = Depends(get_current_user)):
     """

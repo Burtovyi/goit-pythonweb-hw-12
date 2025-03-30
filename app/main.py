@@ -1,6 +1,8 @@
 # app/main.py
-from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, status
+from fastapi import FastAPI, HTTPException, Depends, UploadFile, File, Request, status, Body
 from fastapi.middleware.cors import CORSMiddleware
+from jose import jwt
+from pydantic import EmailStr
 from sqlalchemy.orm import Session
 from typing import List
 from datetime import timedelta
@@ -155,6 +157,8 @@ def update_avatar(file: UploadFile = File(...), current_user: models.User = Depe
     Returns:
         schemas.UserOut: Оновлені дані користувача з новим аватаром.
     """
+    if current_user.avatar_url == "default_avatar.png" and current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="Тільки адміністратори можуть змінювати аватар за замовчуванням")
     result = cloudinary.uploader.upload(file.file)
     current_user.avatar_url = result.get("secure_url")
     db.commit()
@@ -270,6 +274,51 @@ def update_contact(contact_id: int, contact: schemas.ContactUpdate, db: Session 
         raise HTTPException(status_code=404, detail="Контакт не знайдено")
     return db_contact
 
+
+@app.post("/reset-password-request")
+def reset_password_request(email: EmailStr, db: Session = Depends(get_db)):
+    """
+    Генерує JWT токен для скидання пароля та симулює відправку листа.
+
+    :param email: Email користувача, який хоче скинути пароль.
+    :param db: Сесія бази даних.
+    :return: Повідомлення про генерацію токену.
+    :raises HTTPException: Якщо користувача з таким email не існує.
+    """
+    user = crud.get_user_by_email(db, email=email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    reset_token = crud.create_access_token(
+        data={"sub": user.email},
+        expires_delta=timedelta(minutes=15)
+    )
+    # Тут потрібно інтегрувати відправку листа з reset_token (можна використати Celery або інший background task)
+    return {"detail": "Reset token generated", "reset_token": reset_token}
+
+
+@app.post("/reset-password")
+def reset_password(reset_token: str = Body(...), new_password: str = Body(...), db: Session = Depends(get_db)):
+    """
+    Скидає пароль користувача, використовуючи JWT токен.
+
+    :param reset_token: Токен, отриманий через /reset-password-request.
+    :param new_password: Новий пароль.
+    :param db: Сесія бази даних.
+    :return: Повідомлення про успішну зміну пароля.
+    :raises HTTPException: Якщо токен недійсний або користувача не знайдено.
+    """
+    from jose import JWTError
+    try:
+        payload = jwt.decode(reset_token, crud.SECRET_KEY, algorithms=[crud.ALGORITHM])
+        email = payload.get("sub")
+    except JWTError:
+        raise HTTPException(status_code=400, detail="Invalid reset token")
+    user = crud.get_user_by_email(db, email)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.hashed_password = crud.get_password_hash(new_password)
+    db.commit()
+    return {"detail": "Password reset successful"}
 @app.delete("/contacts/{contact_id}")
 def delete_contact(contact_id: int, db: Session = Depends(get_db), current_user: models.User = Depends(auth.get_current_active_user)):
     """

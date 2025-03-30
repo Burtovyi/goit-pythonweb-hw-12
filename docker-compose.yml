@@ -1,6 +1,6 @@
 services:
   api:
-    build: my-app
+    build: .
     ports:
       - "8000:80"
     env_file:
